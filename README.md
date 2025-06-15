@@ -60,12 +60,12 @@ An intelligent task distribution system supporting MCP (Model Context Protocol).
 #### Option 1: Download Binary (Recommended)
 ```bash
 # Download the latest release
-curl -L https://github.com/your-username/auto-claude-code/releases/latest/download/auto-claude-code.exe -o auto-claude-code.exe
+curl -L https://github.com/putao520/auto-claude-code/releases/latest/download/auto-claude-code.exe -o auto-claude-code.exe
 ```
 
 #### Option 2: Build from Source
 ```bash
-git clone https://github.com/your-username/auto-claude-code.git
+git clone https://github.com/putao520/auto-claude-code.git
 cd auto-claude-code
 go build -o auto-claude-code.exe ./cmd/auto-claude-code
 ```
@@ -205,9 +205,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 <div align="center">
   <p>Made with ❤️ for the Windows + WSL + AI development community</p>
   <p>
-    <a href="https://github.com/your-username/auto-claude-code/issues">Report Bug</a>
+    <a href="https://github.com/putao520/auto-claude-code/issues">Report Bug</a>
     ·
-    <a href="https://github.com/your-username/auto-claude-code/issues">Request Feature</a>
+    <a href="https://github.com/putao520/auto-claude-code/issues">Request Feature</a>
     ·
     <a href="docs/USER_GUIDE.md">Documentation</a>
   </p>

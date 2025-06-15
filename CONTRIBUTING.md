@@ -76,7 +76,7 @@ Feature requests are welcome! Please provide:
 
 2. **Set up upstream remote**
    ```bash
-   git remote add upstream https://github.com/original-owner/auto-claude-code.git
+       git remote add upstream https://github.com/putao520/auto-claude-code.git
    ```
 
 3. **Install dependencies**
