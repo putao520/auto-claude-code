@@ -1,0 +1,74 @@
+# Auto Claude Code 配置文件示例
+# 复制此文件为 config.yaml 并根据需要修改
+
+# 基础配置
+debug: false
+log_level: "info"
+
+# WSL 配置
+wsl:
+  # 默认 WSL 发行版（留空使用系统默认）
+  default_distro: ""
+  
+  # 命令超时时间
+  timeout: "30s"
+  
+  # 自定义路径映射（可选）
+  path_mappings:
+    # "C:\\custom\\path": "/mnt/c/custom/path"
+
+# Claude Code 配置
+claude_code:
+  # Claude Code 可执行文件名
+  executable: "claude-code"
+  
+  # 默认启动参数
+  default_args: []
+  
+  # 是否启用交互模式
+  interactive: true
+  
+  # 工作空间目录（可选）
+  workspace_dir: ""
+
+# MCP 服务器配置
+mcp:
+  # 是否启用 MCP 服务器
+  enabled: false
+  
+  # 服务器监听地址
+  host: "localhost"
+  port: 8080
+  
+  # 任务管理配置
+  max_concurrent_tasks: 5
+  task_timeout: "30m"
+  
+  # Git Worktree 配置
+  worktree_base_dir: "./worktrees"
+  cleanup_interval: "1h"
+  max_worktrees: 10
+  
+  # 认证配置
+  auth:
+    enabled: false
+    method: "none"  # "token", "oauth2", "none"
+    token_file: ""
+    allowed_ips:
+      - "127.0.0.1"
+      - "::1"
+  
+  # 任务队列配置
+  queue:
+    max_size: 100
+    retry_attempts: 3
+    retry_interval: "5s"
+    priority_levels: 3
+  
+  # 监控配置
+  monitoring:
+    enabled: true
+    metrics_path: "/metrics"
+    health_path: "/health"
+    log_requests: true
+    log_responses: false 
