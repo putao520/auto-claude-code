@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -148,7 +149,16 @@ func setupFlags() {
 		Long:  "启动MCP服务器，提供Claude Code任务分发和管理功能",
 		RunE:  runMCPServer,
 	}
-	rootCmd.AddCommand(mcpCmd)
+
+	// MCP stdio模式命令
+	mcpStdioCmd := &cobra.Command{
+		Use:   "mcp-stdio",
+		Short: "启动MCP stdio服务器",
+		Long:  "启动MCP服务器的stdio模式，通过标准输入输出进行JSON-RPC通信",
+		RunE:  runMCPStdio,
+	}
+
+	rootCmd.AddCommand(mcpCmd, mcpStdioCmd)
 
 	// 任务管理命令
 	taskCmd := &cobra.Command{
@@ -550,6 +560,79 @@ func runMCPServer(cmd *cobra.Command, args []string) error {
 	}
 
 	log.Info("MCP服务器已关闭")
+	return nil
+}
+
+// runMCPStdio MCP stdio服务器命令执行函数
+func runMCPStdio(cmd *cobra.Command, args []string) error {
+	if err := initApp(); err != nil {
+		return err
+	}
+
+	log.Info("启动MCP stdio服务器")
+
+	// 创建WSL桥接器
+	wslBridge := wsl.NewWSLBridge(log.GetZapLogger())
+
+	// 检查WSL环境
+	if err := wslBridge.CheckWSL(); err != nil {
+		return fmt.Errorf("WSL环境检查失败: %w", err)
+	}
+
+	// 配置stdio传输
+	cfg.MCP.Enabled = true
+	cfg.MCP.HTTP.Enabled = false // 禁用HTTP
+	cfg.MCP.Stdio.Enabled = true // 启用stdio
+	cfg.MCP.Stdio.Reader = os.Stdin
+	cfg.MCP.Stdio.Writer = os.Stdout
+
+	// 创建MCP服务器
+	mcpServer := mcp.NewMCPServer(&cfg.MCP, log, wslBridge)
+
+	// 创建上下文
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// 启动服务器
+	if err := mcpServer.Start(ctx); err != nil {
+		return fmt.Errorf("MCP stdio服务器启动失败: %w", err)
+	}
+
+	log.Info("MCP stdio服务器启动成功")
+
+	// 等待信号或stdin关闭
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// 监控stdin状态
+	stdinChan := make(chan struct{})
+	go func() {
+		// 当stdin关闭时发送信号
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			// 继续读取，直到stdin关闭
+		}
+		close(stdinChan)
+	}()
+
+	// 等待退出信号
+	select {
+	case sig := <-sigChan:
+		log.Info("收到信号，开始关闭服务器", zap.String("signal", sig.String()))
+	case <-stdinChan:
+		log.Info("stdin已关闭，开始关闭服务器")
+	}
+
+	// 优雅关闭
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	if err := mcpServer.Stop(shutdownCtx); err != nil {
+		log.Error("MCP stdio服务器关闭失败", zap.Error(err))
+		return err
+	}
+
+	log.Info("MCP stdio服务器已关闭")
 	return nil
 }
 
@@ -1203,8 +1286,182 @@ func (t *TaskTUI) renderTaskDetails(details *widgets.Paragraph) {
 
 // showTaskDetails 显示任务详细信息（弹窗）
 func (t *TaskTUI) showTaskDetails() {
-	// 这里可以实现一个详细信息弹窗
-	// 暂时使用简单的实现
+	if len(t.tasks) == 0 || t.selectedTask >= len(t.tasks) {
+		return
+	}
+
+	task := t.tasks[t.selectedTask]
+
+	// 获取终端尺寸
+	termWidth, termHeight := ui.TerminalDimensions()
+
+	// 计算弹窗尺寸和位置
+	modalWidth := min(termWidth-4, 100)
+	modalHeight := min(termHeight-4, 25)
+	modalX := (termWidth - modalWidth) / 2
+	modalY := (termHeight - modalHeight) / 2
+
+	// 创建详情弹窗
+	modal := widgets.NewParagraph()
+	modal.Title = fmt.Sprintf("任务详情 - %s", task.ID[:8])
+	modal.SetRect(modalX, modalY, modalX+modalWidth, modalY+modalHeight)
+	modal.BorderStyle = ui.NewStyle(ui.ColorYellow)
+	modal.TitleStyle = ui.NewStyle(ui.ColorYellow, ui.ColorClear, ui.ModifierBold)
+
+	// 构建详细信息文本
+	modalText := t.buildTaskDetailsText(&task)
+	modal.Text = modalText
+
+	// 创建帮助信息
+	helpModal := widgets.NewParagraph()
+	helpModal.Text = "[ESC] 关闭弹窗 | [↑/↓] 滚动"
+	helpModal.SetRect(modalX, modalY+modalHeight, modalX+modalWidth, modalY+modalHeight+3)
+	helpModal.BorderStyle = ui.NewStyle(ui.ColorGreen)
+
+	// 显示弹窗
+	ui.Render(modal, helpModal)
+
+	// 处理弹窗内的键盘事件
+	scrollOffset := 0
+	maxLines := strings.Count(modalText, "\n") + 1
+	visibleLines := modalHeight - 4 // 减去边框和标题
+
+	for {
+		e := <-ui.PollEvents()
+
+		switch e.ID {
+		case "<Escape>", "q":
+			ui.Clear()
+			return
+		case "<Up>":
+			if scrollOffset > 0 {
+				scrollOffset--
+				modal.Text = t.getScrolledText(modalText, scrollOffset, visibleLines)
+				ui.Render(modal, helpModal)
+			}
+		case "<Down>":
+			if scrollOffset < maxLines-visibleLines {
+				scrollOffset++
+				modal.Text = t.getScrolledText(modalText, scrollOffset, visibleLines)
+				ui.Render(modal, helpModal)
+			}
+		case "<Resize>":
+			payload := e.Payload.(ui.Resize)
+			termWidth, termHeight = payload.Width, payload.Height
+
+			// 重新计算尺寸
+			modalWidth = min(termWidth-4, 100)
+			modalHeight = min(termHeight-4, 25)
+			modalX = (termWidth - modalWidth) / 2
+			modalY = (termHeight - modalHeight) / 2
+
+			modal.SetRect(modalX, modalY, modalX+modalWidth, modalY+modalHeight)
+			helpModal.SetRect(modalX, modalY+modalHeight, modalX+modalWidth, modalY+modalHeight+3)
+
+			visibleLines = modalHeight - 4
+			modal.Text = t.getScrolledText(modalText, scrollOffset, visibleLines)
+			ui.Clear()
+			ui.Render(modal, helpModal)
+		}
+	}
+}
+
+// buildTaskDetailsText 构建任务详情文本
+func (t *TaskTUI) buildTaskDetailsText(task *TaskInfo) string {
+	var details strings.Builder
+
+	// 基本信息
+	details.WriteString(fmt.Sprintf("[基本信息](fg:cyan,modifier:bold)\n"))
+	details.WriteString(fmt.Sprintf("ID: %s\n", task.ID))
+	details.WriteString(fmt.Sprintf("状态: %s %s\n", getStatusEmoji(task.Status), task.Status))
+	details.WriteString(fmt.Sprintf("优先级: %s\n", task.Priority))
+	details.WriteString(fmt.Sprintf("项目路径: %s\n", task.ProjectPath))
+	details.WriteString(fmt.Sprintf("描述: %s\n\n", task.Description))
+
+	// 时间信息
+	details.WriteString(fmt.Sprintf("[时间信息](fg:green,modifier:bold)\n"))
+	details.WriteString(fmt.Sprintf("创建时间: %s\n", task.CreatedAt.Format("2006-01-02 15:04:05")))
+	details.WriteString(fmt.Sprintf("开始时间: %s\n", formatTimePtr(task.StartedAt)))
+	details.WriteString(fmt.Sprintf("完成时间: %s\n", formatTimePtr(task.CompletedAt)))
+
+	// 计算耗时
+	if task.StartedAt != nil && !task.StartedAt.IsZero() {
+		var duration time.Duration
+		if task.CompletedAt != nil && !task.CompletedAt.IsZero() {
+			duration = task.CompletedAt.Sub(*task.StartedAt)
+		} else {
+			duration = time.Since(*task.StartedAt)
+		}
+		details.WriteString(fmt.Sprintf("耗时: %s\n\n", formatDuration(duration)))
+	} else {
+		details.WriteString("耗时: -\n\n")
+	}
+
+	// 错误信息
+	if task.Error != "" {
+		details.WriteString(fmt.Sprintf("[错误信息](fg:red,modifier:bold)\n"))
+		details.WriteString(fmt.Sprintf("%s\n\n", task.Error))
+	}
+
+	// 获取详细状态信息
+	if detailedStatus := t.getDetailedTaskStatus(task.ID); detailedStatus != "" {
+		details.WriteString(fmt.Sprintf("[详细状态](fg:yellow,modifier:bold)\n"))
+		details.WriteString(detailedStatus)
+	}
+
+	return details.String()
+}
+
+// getScrolledText 获取滚动后的文本
+func (t *TaskTUI) getScrolledText(fullText string, offset, visibleLines int) string {
+	lines := strings.Split(fullText, "\n")
+
+	start := offset
+	end := min(offset+visibleLines, len(lines))
+
+	if start >= len(lines) {
+		return ""
+	}
+
+	return strings.Join(lines[start:end], "\n")
+}
+
+// getDetailedTaskStatus 获取任务的详细状态信息
+func (t *TaskTUI) getDetailedTaskStatus(taskID string) string {
+	// 尝试从服务器获取更详细的任务信息
+	resp, err := http.Get(fmt.Sprintf("%s/api/tasks/%s", t.serverURL, taskID))
+	if err != nil {
+		return fmt.Sprintf("无法获取详细状态: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf("服务器返回错误: %d", resp.StatusCode)
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Sprintf("解析响应失败: %v", err)
+	}
+
+	// 格式化详细状态
+	var status strings.Builder
+	if message, ok := result["message"].(string); ok && message != "" {
+		status.WriteString(fmt.Sprintf("消息: %s\n", message))
+	}
+
+	if progress, ok := result["progress"].(float64); ok {
+		status.WriteString(fmt.Sprintf("进度: %.1f%%\n", progress*100))
+	}
+
+	if metadata, ok := result["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
+		status.WriteString("元数据:\n")
+		for key, value := range metadata {
+			status.WriteString(fmt.Sprintf("  %s: %v\n", key, value))
+		}
+	}
+
+	return status.String()
 }
 
 // cancelTask 取消任务

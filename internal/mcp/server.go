@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -35,9 +38,9 @@ type mcpServer struct {
 	taskManager     TaskManager
 	worktreeManager WorktreeManager
 
-	// HTTP服务器
-	httpServer *http.Server
-	address    string
+	// 传输层
+	multiTransport *MultiTransport
+	address        string
 }
 
 // NewMCPServer 创建新的MCP服务器
@@ -51,27 +54,40 @@ func NewMCPServer(cfg *config.MCPConfig, log logger.Logger, wslBridge wsl.WSLBri
 	// 创建协议处理器
 	protocolHandler := NewMCPProtocolHandler(taskManager, worktreeManager)
 
-	address := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
-
 	server := &mcpServer{
 		config:          cfg,
 		logger:          log,
 		protocolHandler: protocolHandler,
 		taskManager:     taskManager,
 		worktreeManager: worktreeManager,
-		address:         address,
+		multiTransport:  NewMultiTransport(log),
+		address:         fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 	}
 
-	// 创建HTTP服务器
-	mux := http.NewServeMux()
-	server.setupRoutes(mux)
+	// 创建传输处理器适配器
+	transportHandler := &transportHandlerAdapter{server: server}
 
-	server.httpServer = &http.Server{
-		Addr:         address,
-		Handler:      server.withMiddleware(mux),
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+	// 配置HTTP传输
+	if cfg.HTTP.Enabled {
+		mux := http.NewServeMux()
+		server.setupRoutes(mux)
+
+		httpServer := &http.Server{
+			Addr:         server.address,
+			Handler:      server.withMiddleware(mux),
+			ReadTimeout:  30 * time.Second,
+			WriteTimeout: 30 * time.Second,
+			IdleTimeout:  60 * time.Second,
+		}
+
+		httpTransport := NewHTTPTransport(httpServer, server.address, transportHandler, log)
+		server.multiTransport.AddTransport(httpTransport)
+	}
+
+	// 配置stdio传输
+	if cfg.Stdio.Enabled {
+		stdioTransport := NewStdioTransport(transportHandler, log, cfg.Stdio.Reader, cfg.Stdio.Writer)
+		server.multiTransport.AddTransport(stdioTransport)
 	}
 
 	return server
@@ -91,12 +107,10 @@ func (s *mcpServer) Start(ctx context.Context) error {
 		return apperrors.Wrap(err, apperrors.ErrMCPServerError, "启动任务管理器失败")
 	}
 
-	// 启动HTTP服务器
-	go func() {
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.logger.Error("HTTP服务器启动失败", zap.Error(err))
-		}
-	}()
+	// 启动多传输服务器
+	if err := s.multiTransport.Start(ctx); err != nil {
+		return apperrors.Wrap(err, apperrors.ErrMCPServerError, "启动传输层失败")
+	}
 
 	s.logger.Info("MCP服务器启动成功", zap.String("address", s.address))
 	return nil
@@ -106,9 +120,9 @@ func (s *mcpServer) Start(ctx context.Context) error {
 func (s *mcpServer) Stop(ctx context.Context) error {
 	s.logger.Info("停止MCP服务器")
 
-	// 停止HTTP服务器
-	if err := s.httpServer.Shutdown(ctx); err != nil {
-		s.logger.Warn("HTTP服务器停止失败", zap.Error(err))
+	// 停止传输层
+	if err := s.multiTransport.Stop(ctx); err != nil {
+		s.logger.Warn("传输层停止失败", zap.Error(err))
 	}
 
 	// 停止任务管理器
@@ -460,8 +474,31 @@ func (s *mcpServer) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// TODO: 实现认证逻辑
-		// 这里可以添加Token验证、IP白名单等
+		// 如果认证未启用，直接通过
+		if !s.config.Auth.Enabled {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// IP白名单验证
+		if !s.validateClientIP(r) {
+			s.logger.Warn("访问被拒绝 - IP不在白名单",
+				zap.String("remote_ip", s.getClientIP(r)),
+				zap.String("path", r.URL.Path))
+			s.writeError(w, http.StatusForbidden, "访问被拒绝：IP地址不被允许")
+			return
+		}
+
+		// Token验证
+		if s.config.Auth.Method == "token" {
+			if !s.validateToken(r) {
+				s.logger.Warn("访问被拒绝 - Token验证失败",
+					zap.String("remote_ip", s.getClientIP(r)),
+					zap.String("path", r.URL.Path))
+				s.writeError(w, http.StatusUnauthorized, "未授权访问：Token验证失败")
+				return
+			}
+		}
 
 		next.ServeHTTP(w, r)
 	})
@@ -527,4 +564,137 @@ func (s *mcpServer) writeJSONRPCError(w http.ResponseWriter, id interface{}, cod
 	}
 
 	json.NewEncoder(w).Encode(response)
+}
+
+// 认证相关方法
+
+// validateClientIP 验证客户端IP是否在白名单中
+func (s *mcpServer) validateClientIP(r *http.Request) bool {
+	// 如果没有配置IP白名单，默认允许所有IP
+	if len(s.config.Auth.AllowedIPs) == 0 {
+		return true
+	}
+
+	clientIP := s.getClientIP(r)
+
+	// 检查IP是否在白名单中
+	for _, allowedIP := range s.config.Auth.AllowedIPs {
+		if allowedIP == "*" || allowedIP == clientIP {
+			return true
+		}
+		// 支持CIDR格式的IP范围
+		if strings.Contains(allowedIP, "/") {
+			if s.isIPInCIDR(clientIP, allowedIP) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// getClientIP 获取真实的客户端IP地址
+func (s *mcpServer) getClientIP(r *http.Request) string {
+	// 检查常见的代理头
+	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+		// X-Forwarded-For 可能包含多个IP，取第一个
+		if ips := strings.Split(ip, ","); len(ips) > 0 {
+			return strings.TrimSpace(ips[0])
+		}
+	}
+
+	if ip := r.Header.Get("X-Real-IP"); ip != "" {
+		return ip
+	}
+
+	if ip := r.Header.Get("X-Forwarded"); ip != "" {
+		return ip
+	}
+
+	// 从RemoteAddr获取IP（移除端口）
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+
+	return r.RemoteAddr
+}
+
+// isIPInCIDR 检查IP是否在CIDR范围内
+func (s *mcpServer) isIPInCIDR(ip, cidr string) bool {
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		s.logger.Warn("无效的CIDR格式", zap.String("cidr", cidr), zap.Error(err))
+		return false
+	}
+
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		s.logger.Warn("无效的IP地址", zap.String("ip", ip))
+		return false
+	}
+
+	return network.Contains(parsedIP)
+}
+
+// validateToken 验证Token
+func (s *mcpServer) validateToken(r *http.Request) bool {
+	// 从Authorization头获取token
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		return false
+	}
+
+	// 支持Bearer token格式
+	var token string
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+	} else {
+		token = authHeader
+	}
+
+	if token == "" {
+		return false
+	}
+
+	// 从文件读取有效的tokens
+	validTokens, err := s.loadValidTokens()
+	if err != nil {
+		s.logger.Error("加载token文件失败", zap.Error(err))
+		return false
+	}
+
+	// 验证token
+	for _, validToken := range validTokens {
+		if validToken == token {
+			return true
+		}
+	}
+
+	return false
+}
+
+// loadValidTokens 从文件加载有效的tokens
+func (s *mcpServer) loadValidTokens() ([]string, error) {
+	if s.config.Auth.TokenFile == "" {
+		return nil, fmt.Errorf("未配置token文件")
+	}
+
+	data, err := os.ReadFile(s.config.Auth.TokenFile)
+	if err != nil {
+		return nil, fmt.Errorf("读取token文件失败: %w", err)
+	}
+
+	var tokens []string
+	lines := strings.Split(string(data), "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// 跳过空行和注释行
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		tokens = append(tokens, line)
+	}
+
+	return tokens, nil
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,10 @@ type MCPConfig struct {
 	CleanupInterval string `mapstructure:"cleanup_interval" yaml:"cleanup_interval"`
 	MaxWorktrees    int    `mapstructure:"max_worktrees" yaml:"max_worktrees"`
 
+	// 传输配置
+	HTTP  MCPHTTPConfig  `mapstructure:"http" yaml:"http"`
+	Stdio MCPStdioConfig `mapstructure:"stdio" yaml:"stdio"`
+
 	// 认证配置
 	Auth MCPAuthConfig `mapstructure:"auth" yaml:"auth"`
 
@@ -88,6 +93,19 @@ type MCPMonitoringConfig struct {
 	HealthPath   string `mapstructure:"health_path" yaml:"health_path"`
 	LogRequests  bool   `mapstructure:"log_requests" yaml:"log_requests"`
 	LogResponses bool   `mapstructure:"log_responses" yaml:"log_responses"`
+}
+
+// MCPHTTPConfig MCP HTTP传输配置
+type MCPHTTPConfig struct {
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+}
+
+// MCPStdioConfig MCP stdio传输配置
+type MCPStdioConfig struct {
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+	// Reader和Writer在运行时设置，不序列化
+	Reader io.Reader `mapstructure:"-" yaml:"-"`
+	Writer io.Writer `mapstructure:"-" yaml:"-"`
 }
 
 // ConfigManager 配置管理器接口
@@ -271,6 +289,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("mcp.queue.retry_attempts", 3)
 	v.SetDefault("mcp.queue.retry_interval", "5s")
 	v.SetDefault("mcp.queue.priority_levels", 3)
+
+	// MCP 传输配置默认值
+	v.SetDefault("mcp.http.enabled", true)
+	v.SetDefault("mcp.stdio.enabled", false)
 
 	// MCP 监控配置默认值
 	v.SetDefault("mcp.monitoring.enabled", true)

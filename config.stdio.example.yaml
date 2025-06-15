@@ -1,0 +1,67 @@
+# Auto Claude Code - MCP Stdio 模式配置示例
+# 此配置文件演示如何配置MCP服务器的stdio模式
+
+# 基础配置
+debug: false
+log_level: "info"
+
+# WSL配置
+wsl:
+  default_distro: "Ubuntu"           # 默认WSL发行版，空值表示使用系统默认
+  timeout: "30s"               # 命令超时时间
+  path_mappings:
+    "C:\\": "/mnt/c/"
+    "D:\\": "/mnt/d/"
+
+# Claude Code配置
+claude_code:
+  executable: "claude-code"    # Claude Code可执行文件名
+  default_args: []             # 默认参数
+  interactive: true            # 是否启用交互模式
+  workspace_dir: ""            # 工作空间目录
+
+# MCP服务器配置
+mcp:
+  enabled: true                                    # 启用MCP服务器
+  host: "localhost"                               # HTTP服务器主机（stdio模式下不使用）
+  port: 8080                                      # HTTP服务器端口（stdio模式下不使用）
+  max_concurrent_tasks: 5                         # 最大并发任务数
+  task_timeout: "30m"                            # 任务超时时间
+
+  # Git Worktree配置
+  worktree_base_dir: "./worktrees"               # Worktree基础目录
+  cleanup_interval: "1h"                         # 清理间隔
+  max_worktrees: 10                              # 最大worktree数量
+
+  # 传输配置
+  http:
+    enabled: false                               # 禁用HTTP传输（stdio模式）
+  
+  stdio:
+    enabled: true                                # 启用stdio传输
+    # reader和writer在运行时自动设置为stdin/stdout
+
+  # 认证配置（stdio模式下通常不需要）
+  auth:
+    enabled: true
+    method: "token"
+    token_file: "./tokens.txt"
+    allowed_ips:
+      - "127.0.0.1"
+      - "::1"
+      - "192.168.1.0/24"
+
+  # 任务队列配置
+  queue:
+    max_size: 100                                # 队列最大大小
+    retry_attempts: 3                            # 重试次数
+    retry_interval: "5s"                         # 重试间隔
+    priority_levels: 3                           # 优先级级别数
+
+  # 监控配置
+  monitoring:
+    enabled: true                                # 启用监控
+    metrics_path: "/metrics"                     # 指标路径（stdio模式下不使用）
+    health_path: "/health"                       # 健康检查路径（stdio模式下不使用）
+    log_requests: true                           # 记录请求日志
+    log_responses: false                         # 记录响应日志 

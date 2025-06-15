@@ -12,19 +12,78 @@ import (
 // MCPVersion MCP协议版本
 const MCPVersion = "2024-11-05"
 
+// 具体的参数类型定义
+
+// ExecuteClaudeCodeParams 执行Claude Code的参数
+type ExecuteClaudeCodeParams struct {
+	ProjectPath string            `json:"projectPath"`
+	Command     string            `json:"command,omitempty"`
+	Args        []string          `json:"args,omitempty"`
+	Context     map[string]string `json:"context,omitempty"`
+	Priority    int               `json:"priority,omitempty"`
+}
+
+// GetTaskStatusParams 获取任务状态的参数
+type GetTaskStatusParams struct {
+	TaskID string `json:"taskId"`
+}
+
+// CancelTaskParams 取消任务的参数
+type CancelTaskParams struct {
+	TaskID string `json:"taskId"`
+}
+
+// ListTasksParams 列出任务的参数
+type ListTasksParams struct {
+	Status string `json:"status,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Offset int    `json:"offset,omitempty"`
+}
+
+// TaskResult 任务执行结果
+type TaskResult struct {
+	Output    string            `json:"output,omitempty"`
+	ExitCode  int               `json:"exitCode,omitempty"`
+	Error     string            `json:"error,omitempty"`
+	Artifacts []string          `json:"artifacts,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+}
+
+// SchemaProperty JSON Schema属性定义
+type SchemaProperty struct {
+	Type        string                    `json:"type"`
+	Description string                    `json:"description,omitempty"`
+	Enum        []string                  `json:"enum,omitempty"`
+	Default     interface{}               `json:"default,omitempty"`
+	Properties  map[string]SchemaProperty `json:"properties,omitempty"`
+	Items       *SchemaProperty           `json:"items,omitempty"`
+	Required    []string                  `json:"required,omitempty"`
+}
+
+// 改进的JSON-RPC类型定义
+
+// JSONRPCID JSON-RPC ID类型（可以是字符串或数字）
+type JSONRPCID interface{}
+
+// JSONRPCParams JSON-RPC参数的联合类型
+type JSONRPCParams interface{}
+
+// JSONRPCResult JSON-RPC结果的联合类型
+type JSONRPCResult interface{}
+
 // JSONRPCRequest JSON-RPC 2.0 请求结构
 type JSONRPCRequest struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      interface{} `json:"id,omitempty"`
-	Method  string      `json:"method"`
-	Params  interface{} `json:"params,omitempty"`
+	JSONRPC string        `json:"jsonrpc"`
+	ID      JSONRPCID     `json:"id,omitempty"`
+	Method  string        `json:"method"`
+	Params  JSONRPCParams `json:"params,omitempty"`
 }
 
 // JSONRPCResponse JSON-RPC 2.0 响应结构
 type JSONRPCResponse struct {
 	JSONRPC string        `json:"jsonrpc"`
-	ID      interface{}   `json:"id,omitempty"`
-	Result  interface{}   `json:"result,omitempty"`
+	ID      JSONRPCID     `json:"id,omitempty"`
+	Result  JSONRPCResult `json:"result,omitempty"`
 	Error   *JSONRPCError `json:"error,omitempty"`
 }
 
@@ -32,12 +91,12 @@ type JSONRPCResponse struct {
 type JSONRPCError struct {
 	Code    int         `json:"code"`
 	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
+	Data    interface{} `json:"data,omitempty"` // 保留interface{}，因为错误数据可以是任意类型
 }
 
 // MCPCapabilities MCP服务器能力声明
 type MCPCapabilities struct {
-	Experimental map[string]interface{} `json:"experimental,omitempty"`
+	Experimental map[string]interface{} `json:"experimental,omitempty"` // 保留interface{}，实验性功能需要灵活性
 	Logging      *LoggingCapability     `json:"logging,omitempty"`
 	Prompts      *PromptsCapability     `json:"prompts,omitempty"`
 	Resources    *ResourcesCapability   `json:"resources,omitempty"`
@@ -104,9 +163,9 @@ type Tool struct {
 
 // ToolSchema 工具参数模式
 type ToolSchema struct {
-	Type       string                 `json:"type"`
-	Properties map[string]interface{} `json:"properties,omitempty"`
-	Required   []string               `json:"required,omitempty"`
+	Type       string                    `json:"type"`
+	Properties map[string]SchemaProperty `json:"properties,omitempty"`
+	Required   []string                  `json:"required,omitempty"`
 }
 
 // CallToolRequest 调用工具请求
@@ -219,35 +278,12 @@ func (h *protocolHandler) ListTools(ctx context.Context) ([]Tool, error) {
 			Description: "在WSL环境中执行Claude Code任务",
 			InputSchema: ToolSchema{
 				Type: "object",
-				Properties: map[string]interface{}{
-					"projectPath": map[string]interface{}{
-						"type":        "string",
-						"description": "项目路径（Windows路径）",
-					},
-					"command": map[string]interface{}{
-						"type":        "string",
-						"description": "要执行的命令",
-						"default":     "",
-					},
-					"args": map[string]interface{}{
-						"type":        "array",
-						"description": "命令参数",
-						"items": map[string]interface{}{
-							"type": "string",
-						},
-					},
-					"priority": map[string]interface{}{
-						"type":        "integer",
-						"description": "任务优先级 (1-3)",
-						"default":     2,
-						"minimum":     1,
-						"maximum":     3,
-					},
-					"timeout": map[string]interface{}{
-						"type":        "string",
-						"description": "任务超时时间 (如: 30m, 1h)",
-						"default":     "30m",
-					},
+				Properties: map[string]SchemaProperty{
+					"projectPath": stringProperty("项目路径（Windows路径）"),
+					"command":     stringProperty("要执行的命令", ""),
+					"args":        arrayProperty("命令参数", "string"),
+					"priority":    integerProperty("任务优先级 (1-3)", 2, 1, 3),
+					"timeout":     stringProperty("任务超时时间 (如: 30m, 1h)", "30m"),
 				},
 				Required: []string{"projectPath"},
 			},
@@ -257,11 +293,8 @@ func (h *protocolHandler) ListTools(ctx context.Context) ([]Tool, error) {
 			Description: "获取任务执行状态",
 			InputSchema: ToolSchema{
 				Type: "object",
-				Properties: map[string]interface{}{
-					"taskId": map[string]interface{}{
-						"type":        "string",
-						"description": "任务ID",
-					},
+				Properties: map[string]SchemaProperty{
+					"taskId": stringProperty("任务ID"),
 				},
 				Required: []string{"taskId"},
 			},
@@ -271,11 +304,8 @@ func (h *protocolHandler) ListTools(ctx context.Context) ([]Tool, error) {
 			Description: "取消正在执行的任务",
 			InputSchema: ToolSchema{
 				Type: "object",
-				Properties: map[string]interface{}{
-					"taskId": map[string]interface{}{
-						"type":        "string",
-						"description": "任务ID",
-					},
+				Properties: map[string]SchemaProperty{
+					"taskId": stringProperty("任务ID"),
 				},
 				Required: []string{"taskId"},
 			},
@@ -285,12 +315,8 @@ func (h *protocolHandler) ListTools(ctx context.Context) ([]Tool, error) {
 			Description: "列出所有任务状态",
 			InputSchema: ToolSchema{
 				Type: "object",
-				Properties: map[string]interface{}{
-					"status": map[string]interface{}{
-						"type":        "string",
-						"description": "过滤任务状态",
-						"enum":        []string{"pending", "running", "completed", "failed", "cancelled"},
-					},
+				Properties: map[string]SchemaProperty{
+					"status": enumProperty("过滤任务状态", []string{"pending", "running", "completed", "failed", "cancelled"}),
 				},
 			},
 		},
@@ -518,4 +544,47 @@ func (h *protocolHandler) HealthCheck(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// SchemaProperty助手函数
+
+// stringProperty 创建字符串类型的属性
+func stringProperty(description string, defaultValue ...string) SchemaProperty {
+	prop := SchemaProperty{
+		Type:        "string",
+		Description: description,
+	}
+	if len(defaultValue) > 0 {
+		prop.Default = defaultValue[0]
+	}
+	return prop
+}
+
+// arrayProperty 创建数组类型的属性
+func arrayProperty(description string, itemType string) SchemaProperty {
+	return SchemaProperty{
+		Type:        "array",
+		Description: description,
+		Items: &SchemaProperty{
+			Type: itemType,
+		},
+	}
+}
+
+// integerProperty 创建整数类型的属性
+func integerProperty(description string, defaultValue int, min int, max int) SchemaProperty {
+	return SchemaProperty{
+		Type:        "integer",
+		Description: description,
+		Default:     defaultValue,
+	}
+}
+
+// enumProperty 创建枚举类型的属性
+func enumProperty(description string, values []string) SchemaProperty {
+	return SchemaProperty{
+		Type:        "string",
+		Description: description,
+		Enum:        values,
+	}
 }
